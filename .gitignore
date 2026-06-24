@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Virtual Environment
+venv/
+env/
+
+# Data files (too large for GitHub)
+data/raw/
+data/processed/
+
+# Environment variables (keep secrets safe)
+.env
+
+# VS Code
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Models (too large)
+*.h5
+*.pkl
+*.joblib
+
+# Logs
+*.log
