@@ -1,0 +1,24 @@
+[
+  {
+    "attack_type": "DoS",
+    "src_ip": "192.168.1.100",
+    "dst_ip": "10.203.189.103",
+    "protocol": "TCP",
+    "packet_count": 850,
+    "total_bytes": 425000,
+    "packets_per_sec": 48.5,
+    "severity": "HIGH",
+    "timestamp": "2026-06-26 19:47:57"
+  },
+  {
+    "attack_type": "Probe",
+    "src_ip": "203.0.113.45",
+    "dst_ip": "10.203.189.103",
+    "protocol": "TCP",
+    "packet_count": 120,
+    "total_bytes": 6000,
+    "packets_per_sec": 22.3,
+    "severity": "MEDIUM",
+    "timestamp": "2026-06-26 19:48:59"
+  }
+]
