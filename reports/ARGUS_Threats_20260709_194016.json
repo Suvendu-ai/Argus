@@ -1,0 +1,14 @@
+[
+  {
+    "src_ip": "10.95.96.103",
+    "dst_ip": "34.104.35.123",
+    "protocol": "TCP",
+    "packet_count": 816,
+    "total_bytes": 52292,
+    "packets_per_sec": 164.2218,
+    "flow_duration": 4.9689,
+    "attack_type": "Unknown",
+    "is_threat": true,
+    "rf_confidence": 55.0,
+    "ae_error": 1.236193,
+    "ae_is_anomaly": 
