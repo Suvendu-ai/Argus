@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────
+# ARGUS — Docker Compose
+# Runs entire stack with one command
+# ─────────────────────────────────────────
+
+version: '3.8'
+
+services:
+
+  # ── Python API Backend ──────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: argus_api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist models, data, reports
+      - ./ml/models:/app/ml/models
+      - ./data:/app/data
+      - ./reports:/app/reports
+      - ./alerts:/app/alerts
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434/api/generate
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - argus_network
+
+  # ── React Dashboard ─────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: argus_dashboard
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - argus_network
+
+networks:
+  argus_network:
+    driver: bridge

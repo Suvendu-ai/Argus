@@ -1,0 +1,15 @@
+scapy
+pandas
+numpy
+scikit-learn
+tensorflow
+fastapi
+uvicorn
+requests
+python-dotenv
+matplotlib
+seaborn
+jupyter
+joblib
+websockets
+pyyaml

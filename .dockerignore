@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.vscode/
+.git/
+*.log
+node_modules/
+dashboard/node_modules/
+dashboard/.vite/
+*.h5
+data/raw/
+notebooks/
