@@ -1,9 +1,8 @@
 # core/classifier.py
 # ─────────────────────────────────────────
-# ARGUS — Real-time Threat Classifier
-# Bridges ML models with live traffic
-# Loads both Random Forest + Autoencoder
-# and runs predictions on live flows
+# ARGUS — Dual Dataset Classifier
+# Combines NSL-KDD + CICIDS2017 models
+# for maximum threat coverage
 # ─────────────────────────────────────────
 
 import joblib
@@ -20,21 +19,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────
-# Model paths
-# ─────────────────────────────────────────
-MODEL_DIR         = "ml/models/"
-RF_MODEL_PATH     = f"{MODEL_DIR}argus_classifier.pkl"
-RF_ENCODERS_PATH  = f"{MODEL_DIR}label_encoders.pkl"
-RF_TARGET_PATH    = f"{MODEL_DIR}target_encoder.pkl"
-AE_MODEL_PATH     = f"{MODEL_DIR}argus_autoencoder.keras"
-AE_SCALER_PATH    = f"{MODEL_DIR}autoencoder_scaler.pkl"
-AE_THRESHOLD_PATH = f"{MODEL_DIR}anomaly_threshold.pkl"
+MODEL_DIR = "ml/models/"
 
 # ─────────────────────────────────────────
-# NSL-KDD feature columns the model expects
+# NSL-KDD Model Paths
 # ─────────────────────────────────────────
-FEATURE_COLUMNS = [
+NSL_RF_PATH        = f"{MODEL_DIR}argus_classifier.pkl"
+NSL_ENCODERS_PATH  = f"{MODEL_DIR}label_encoders.pkl"
+NSL_TARGET_PATH    = f"{MODEL_DIR}target_encoder.pkl"
+NSL_AE_PATH        = f"{MODEL_DIR}argus_autoencoder.keras"
+NSL_AE_SCALER_PATH = f"{MODEL_DIR}autoencoder_scaler.pkl"
+NSL_AE_THRESH_PATH = f"{MODEL_DIR}anomaly_threshold.pkl"
+
+# ─────────────────────────────────────────
+# CICIDS2017 Model Paths
+# ─────────────────────────────────────────
+CIC_RF_PATH        = f"{MODEL_DIR}cicids_classifier.pkl"
+CIC_LE_PATH        = f"{MODEL_DIR}cicids_label_encoder.pkl"
+CIC_FEAT_PATH      = f"{MODEL_DIR}cicids_feature_cols.pkl"
+CIC_AE_PATH        = f"{MODEL_DIR}cicids_autoencoder.keras"
+CIC_AE_SCALER_PATH = f"{MODEL_DIR}cicids_ae_scaler.pkl"
+CIC_AE_THRESH_PATH = f"{MODEL_DIR}cicids_ae_threshold.pkl"
+
+# ─────────────────────────────────────────
+# NSL-KDD feature columns
+# ─────────────────────────────────────────
+NSL_FEATURE_COLUMNS = [
     "duration", "protocol_type", "service", "flag",
     "src_bytes", "dst_bytes", "land", "wrong_fragment",
     "urgent", "hot", "num_failed_logins", "logged_in",
@@ -51,200 +61,287 @@ FEATURE_COLUMNS = [
     "dst_host_srv_rerror_rate"
 ]
 
+# ─────────────────────────────────────────
+# Severity mapping
+# ─────────────────────────────────────────
+SEVERITY_MAP = {
+    "NORMAL"      : "LOW",
+    "DoS"         : "HIGH",
+    "DDoS"        : "HIGH",
+    "Probe"       : "MEDIUM",
+    "PortScan"    : "MEDIUM",
+    "R2L"         : "HIGH",
+    "U2R"         : "CRITICAL",
+    "BruteForce"  : "HIGH",
+    "WebAttack"   : "HIGH",
+    "Botnet"      : "CRITICAL",
+    "Infiltration": "CRITICAL",
+    "Unknown"     : "HIGH",
+}
+
 
 class ArgusClassifier:
     """
-    Main classifier that combines:
-    - Random Forest  → identifies KNOWN attack types
-    - Autoencoder    → detects UNKNOWN anomalies
+    Dual-dataset classifier combining:
+    - NSL-KDD  : Random Forest + Autoencoder
+    - CICIDS2017: Random Forest + Autoencoder
 
-    Both models vote on every flow.
-    If either flags it — Argus raises an alert.
+    All 4 models vote on every flow.
+    Final verdict is the most severe detection.
     """
 
     def __init__(self):
-        self.rf_model      = None
-        self.rf_encoders   = None
-        self.rf_target     = None
-        self.ae_model      = None
-        self.ae_scaler     = None
-        self.ae_threshold  = None
+        # NSL-KDD models
+        self.nsl_rf        = None
+        self.nsl_encoders  = None
+        self.nsl_target    = None
+        self.nsl_ae        = None
+        self.nsl_scaler    = None
+        self.nsl_threshold = None
+
+        # CICIDS2017 models
+        self.cic_rf        = None
+        self.cic_le        = None
+        self.cic_features  = None
+        self.cic_ae        = None
+        self.cic_scaler    = None
+        self.cic_threshold = None
+
         self.is_loaded     = False
 
     def load_models(self):
-        """
-        Loads all trained models from disk.
-        Must be called before any predictions.
-        """
-        logger.info("Loading ARGUS models...")
+        """Loads all 4 models from disk."""
+        logger.info("Loading ARGUS dual-dataset models...")
 
         try:
-            # ── Random Forest ──────────────────────
-            if not os.path.exists(RF_MODEL_PATH):
-                logger.error(f"Model not found: {RF_MODEL_PATH}")
-                logger.error("Run: python ml/train_classifier.py first!")
-                return False
+            # ── NSL-KDD ──────────────────────────
+            self.nsl_rf        = joblib.load(NSL_RF_PATH)
+            self.nsl_encoders  = joblib.load(NSL_ENCODERS_PATH)
+            self.nsl_target    = joblib.load(NSL_TARGET_PATH)
+            self.nsl_ae        = tf.keras.models.load_model(NSL_AE_PATH)
+            self.nsl_scaler    = joblib.load(NSL_AE_SCALER_PATH)
+            self.nsl_threshold = joblib.load(NSL_AE_THRESH_PATH)
+            logger.info("✅ NSL-KDD models loaded")
+            logger.info(f"   RF classes    : {list(self.nsl_target.classes_)}")
+            logger.info(f"   AE threshold  : {self.nsl_threshold:.6f}")
 
-            self.rf_model    = joblib.load(RF_MODEL_PATH)
-            self.rf_encoders = joblib.load(RF_ENCODERS_PATH)
-            self.rf_target   = joblib.load(RF_TARGET_PATH)
-            logger.info("✅ Random Forest loaded")
-
-            # ── Autoencoder ────────────────────────
-            if not os.path.exists(AE_MODEL_PATH):
-                logger.error(f"Model not found: {AE_MODEL_PATH}")
-                logger.error("Run: python ml/train_autoencoder.py first!")
-                return False
-
-            self.ae_model     = tf.keras.models.load_model(AE_MODEL_PATH)
-            self.ae_scaler    = joblib.load(AE_SCALER_PATH)
-            self.ae_threshold = joblib.load(AE_THRESHOLD_PATH)
-            logger.info("✅ Autoencoder loaded")
-            logger.info(f"   Anomaly threshold: {self.ae_threshold:.6f}")
+            # ── CICIDS2017 ────────────────────────
+            self.cic_rf        = joblib.load(CIC_RF_PATH)
+            self.cic_le        = joblib.load(CIC_LE_PATH)
+            self.cic_features  = joblib.load(CIC_FEAT_PATH)
+            self.cic_ae        = tf.keras.models.load_model(CIC_AE_PATH)
+            self.cic_scaler    = joblib.load(CIC_AE_SCALER_PATH)
+            self.cic_threshold = joblib.load(CIC_AE_THRESH_PATH)
+            logger.info("✅ CICIDS2017 models loaded")
+            logger.info(f"   RF classes    : {list(self.cic_le.classes_)}")
+            logger.info(f"   AE threshold  : {self.cic_threshold:.6f}")
 
             self.is_loaded = True
-            logger.info("✅ All models ready — ARGUS is watching!")
+            logger.info("✅ All 4 models ready — ARGUS is watching!")
             return True
 
         except Exception as e:
             logger.error(f"Error loading models: {e}")
             return False
 
-    def flow_to_features(self, flow: dict) -> pd.DataFrame:
-        """
-        Converts a live network flow (from extractor.py)
-        into the feature format the ML models expect.
+    # ─────────────────────────────────────
+    # NSL-KDD Feature Extraction
+    # ─────────────────────────────────────
+    def _nsl_features(self, flow: dict) -> pd.DataFrame:
+        """Converts live flow to NSL-KDD feature format."""
+        features = {col: 0 for col in NSL_FEATURE_COLUMNS}
 
-        Maps live flow features → NSL-KDD style features.
-        Missing features are filled with 0 (safe default).
-        """
-        # Start with all zeros
-        features = {col: 0 for col in FEATURE_COLUMNS}
+        proto_map = {"TCP": "tcp", "UDP": "udp", "ICMP": "icmp"}
+        proto     = flow.get("protocol", "TCP")
+        features["protocol_type"] = proto_map.get(proto, "tcp")
+        features["src_bytes"]     = flow.get("total_bytes", 0)
+        features["dst_bytes"]     = flow.get("total_bytes", 0) // 2
+        features["duration"]      = int(flow.get("flow_duration", 0))
+        features["count"]         = flow.get("packet_count", 0)
+        features["srv_count"]     = flow.get("packet_count", 0)
+        features["flag"]          = "SF"
+        features["service"]       = "http"
 
-        # Map what we have from live capture
-        protocol_map = {"TCP": "tcp", "UDP": "udp", "ICMP": "icmp"}
-        proto        = flow.get("protocol", "TCP")
-        features["protocol_type"] = protocol_map.get(proto, "tcp")
-
-        features["src_bytes"]   = flow.get("total_bytes",     0)
-        features["dst_bytes"]   = flow.get("total_bytes",     0) // 2
-        features["duration"]    = int(flow.get("flow_duration", 0))
-        features["count"]       = flow.get("packet_count",    0)
-        features["srv_count"]   = flow.get("packet_count",    0)
-        features["wrong_fragment"] = 0
-        features["urgent"]      = 0
-        features["flag"]        = "SF"  # Normal flag
-        features["service"]     = "http"
-
-        # TCP flag features
-        features["serror_rate"]     = 1.0 if flow.get("syn_count", 0) > 10 else 0.0
-        features["srv_serror_rate"] = features["serror_rate"]
-        features["rerror_rate"]     = 1.0 if flow.get("rst_count", 0) > 5  else 0.0
-
-        # Derived rate features
         pps = flow.get("packets_per_sec", 0)
-        features["same_srv_rate"]      = min(1.0, pps / 100)
-        features["diff_srv_rate"]      = 1.0 - features["same_srv_rate"]
-        features["dst_host_count"]     = min(255, flow.get("packet_count", 0))
-        features["dst_host_srv_count"] = features["dst_host_count"]
+        syn = flow.get("syn_count", 0)
+        rst = flow.get("rst_count", 0)
+
+        features["serror_rate"]         = 1.0 if syn > 10 else 0.0
+        features["srv_serror_rate"]     = features["serror_rate"]
+        features["rerror_rate"]         = 1.0 if rst > 5  else 0.0
+        features["same_srv_rate"]       = min(1.0, pps / 100)
+        features["diff_srv_rate"]       = 1.0 - features["same_srv_rate"]
+        features["dst_host_count"]      = min(255, flow.get("packet_count", 0))
+        features["dst_host_srv_count"]  = features["dst_host_count"]
+        features["dst_host_serror_rate"]= features["serror_rate"]
 
         df = pd.DataFrame([features])
-
-        # Encode categorical columns
-        cat_cols = ["protocol_type", "service", "flag"]
-        for col in cat_cols:
-            le = self.rf_encoders.get(col)
+        for col in ["protocol_type", "service", "flag"]:
+            le = self.nsl_encoders.get(col)
             if le:
                 val = df[col].iloc[0]
-                if val in le.classes_:
-                    df[col] = le.transform([val])[0]
-                else:
-                    df[col] = 0
-
+                df[col] = le.transform([val])[0] if val in le.classes_ else 0
         return df
 
-    def predict_rf(self, features_df: pd.DataFrame) -> dict:
-        """
-        Random Forest prediction — identifies attack TYPE.
-        Returns attack category and confidence score.
-        """
-        try:
-            prediction   = self.rf_model.predict(features_df)[0]
-            probabilities = self.rf_model.predict_proba(features_df)[0]
-            confidence   = float(np.max(probabilities))
-            attack_type  = self.rf_target.inverse_transform([prediction])[0]
+    # ─────────────────────────────────────
+    # CICIDS2017 Feature Extraction
+    # ─────────────────────────────────────
+    def _cic_features(self, flow: dict) -> pd.DataFrame:
+        """Converts live flow to CICIDS2017 feature format."""
+        features = {col: 0 for col in self.cic_features}
 
+        total_bytes  = flow.get("total_bytes",     0)
+        packet_count = flow.get("packet_count",    0)
+        pps          = flow.get("packets_per_sec", 0)
+        duration     = flow.get("flow_duration",   0)
+        syn_count    = flow.get("syn_count",        0)
+        dst_port     = flow.get("dst_port",         80)
+
+        # Map available features to CICIDS column names
+        col_map = {
+            "Destination Port"            : dst_port,
+            "Total Fwd Packets"           : packet_count,
+            "Total Backward Packets"      : packet_count // 2,
+            "Total Length of Fwd Packets" : total_bytes,
+            "Total Length of Bwd Packets" : total_bytes // 2,
+            "Fwd Packet Length Max"       : total_bytes // max(packet_count, 1),
+            "Fwd Packet Length Mean"      : total_bytes // max(packet_count, 1),
+            "Bwd Packet Length Max"       : total_bytes // max(packet_count, 1),
+            "Flow Bytes/s"                : total_bytes * pps,
+            "Flow Packets/s"              : pps,
+            "Flow Duration"               : int(duration * 1e6),
+            "Fwd Packets/s"               : pps,
+            "Bwd Packets/s"               : pps / 2,
+            "Avg Fwd Segment Size"        : total_bytes // max(packet_count, 1),
+            "Average Packet Size"         : total_bytes // max(packet_count, 1),
+            "Subflow Fwd Packets"         : packet_count,
+            "Subflow Fwd Bytes"           : total_bytes,
+            "SYN Flag Count"              : syn_count,
+            "RST Flag Count"              : flow.get("rst_count", 0),
+            "ACK Flag Count"              : flow.get("ack_count", 0),
+            "FIN Flag Count"              : flow.get("fin_count", 0),
+        }
+
+        for col, val in col_map.items():
+            if col in features:
+                features[col] = val
+
+        df = pd.DataFrame([features])
+        df = df.reindex(columns=self.cic_features, fill_value=0)
+        return df
+
+    # ─────────────────────────────────────
+    # Individual Predictions
+    # ─────────────────────────────────────
+    def _nsl_rf_predict(self, features_df):
+        try:
+            pred  = self.nsl_rf.predict(features_df)[0]
+            proba = self.nsl_rf.predict_proba(features_df)[0]
             return {
-                "attack_type" : attack_type,
-                "confidence"  : round(confidence * 100, 2),
-                "model"       : "RandomForest"
+                "label"     : self.nsl_target.inverse_transform([pred])[0],
+                "confidence": round(float(np.max(proba)) * 100, 2),
+                "source"    : "NSL-RF"
             }
         except Exception as e:
-            logger.error(f"RF prediction error: {e}")
-            return {"attack_type": "Unknown", "confidence": 0, "model": "RandomForest"}
+            return {"label": "Unknown", "confidence": 0, "source": "NSL-RF"}
 
-    def predict_autoencoder(self, features_df: pd.DataFrame) -> dict:
-        """
-        Autoencoder prediction — detects ANOMALIES.
-        High reconstruction error = something unusual = potential attack.
-        """
+    def _nsl_ae_predict(self, features_df):
         try:
-            # Scale features
-            X_scaled = self.ae_scaler.transform(features_df)
-
-            # Reconstruct
-            X_reconstructed = self.ae_model.predict(X_scaled, verbose=0)
-
-            # Calculate reconstruction error
-            mse_error = float(np.mean(np.power(X_scaled - X_reconstructed, 2)))
-
-            # Is it an anomaly?
-            is_anomaly = mse_error > self.ae_threshold
-
+            X   = self.nsl_scaler.transform(features_df)
+            X_r = self.nsl_ae.predict(X, verbose=0)
+            mse = float(np.mean(np.power(X - X_r, 2)))
             return {
-                "is_anomaly"  : is_anomaly,
-                "error"       : round(mse_error, 6),
-                "threshold"   : round(self.ae_threshold, 6),
-                "model"       : "Autoencoder"
+                "is_anomaly": mse > self.nsl_threshold,
+                "error"     : round(mse, 6),
+                "source"    : "NSL-AE"
             }
         except Exception as e:
-            logger.error(f"Autoencoder prediction error: {e}")
-            return {"is_anomaly": False, "error": 0, "threshold": 0, "model": "Autoencoder"}
+            return {"is_anomaly": False, "error": 0, "source": "NSL-AE"}
 
+    def _cic_rf_predict(self, features_df):
+        try:
+            pred  = self.cic_rf.predict(features_df)[0]
+            proba = self.cic_rf.predict_proba(features_df)[0]
+            return {
+                "label"     : self.cic_le.inverse_transform([pred])[0],
+                "confidence": round(float(np.max(proba)) * 100, 2),
+                "source"    : "CIC-RF"
+            }
+        except Exception as e:
+            return {"label": "Unknown", "confidence": 0, "source": "CIC-RF"}
+
+    def _cic_ae_predict(self, features_df):
+        try:
+            X   = self.cic_scaler.transform(features_df)
+            X_r = self.cic_ae.predict(X, verbose=0)
+            mse = float(np.mean(np.power(X - X_r, 2)))
+            return {
+                "is_anomaly": mse > self.cic_threshold,
+                "error"     : round(mse, 6),
+                "source"    : "CIC-AE"
+            }
+        except Exception as e:
+            return {"is_anomaly": False, "error": 0, "source": "CIC-AE"}
+
+    # ─────────────────────────────────────
+    # Master Classification
+    # ─────────────────────────────────────
     def classify_flow(self, flow: dict) -> dict:
         """
-        Master function — classifies a single live flow.
-        Combines both model results into one final verdict.
+        Classifies a live flow using all 4 models.
 
-        Returns a threat dict ready for the LLM explainer.
+        Voting logic:
+        - If ANY model detects a threat → flag it
+        - Use the most specific attack label
+        - CICIDS2017 takes priority (more modern)
         """
         if not self.is_loaded:
-            logger.error("Models not loaded! Call load_models() first.")
+            logger.error("Models not loaded!")
             return None
 
-        # Convert flow to features
-        features_df = self.flow_to_features(flow)
+        # Get features for both formats
+        nsl_feat = self._nsl_features(flow)
+        cic_feat = self._cic_features(flow)
 
-        # Get predictions from both models
-        rf_result  = self.predict_rf(features_df)
-        ae_result  = self.predict_autoencoder(features_df)
+        # Run all 4 predictions
+        nsl_rf = self._nsl_rf_predict(nsl_feat)
+        nsl_ae = self._nsl_ae_predict(nsl_feat)
+        cic_rf = self._cic_rf_predict(cic_feat)
+        cic_ae = self._cic_ae_predict(cic_feat)
 
-        # ── Final Verdict Logic ────────────────
-        # If RF says it's an attack → trust it
-        # If Autoencoder says anomaly → flag it
-        # If both say normal → it's normal
-        attack_type = rf_result["attack_type"]
+        # ── Voting Logic ──────────────────────
+        # Priority: CICIDS RF → NSL RF → Autoencoders
+        attack_type = "NORMAL"
         is_threat   = False
+        source      = "None"
 
-        if attack_type != "NORMAL":
-            is_threat = True
-        elif ae_result["is_anomaly"]:
+        # CICIDS2017 RF (most modern, highest priority)
+        if cic_rf["label"] != "NORMAL":
+            attack_type = cic_rf["label"]
             is_threat   = True
-            attack_type = "Unknown"  # Anomaly not in known categories
+            source      = "CIC-RF"
+
+        # NSL-KDD RF
+        elif nsl_rf["label"] != "NORMAL":
+            attack_type = nsl_rf["label"]
+            is_threat   = True
+            source      = "NSL-RF"
+
+        # CICIDS2017 Autoencoder — only flag if error is significantly above threshold
+        elif cic_ae["is_anomaly"] and cic_ae["error"] > (self.cic_threshold * 2):
+           attack_type = "Unknown"
+           is_threat   = True
+           source      = "CIC-AE"
+        # NSL-KDD Autoencoder
+        elif nsl_ae["is_anomaly"]:
+            attack_type = "Unknown"
+            is_threat   = True
+            source      = "NSL-AE"
+
+        severity = SEVERITY_MAP.get(attack_type, "HIGH")
 
         # Build result
         result = {
-            # Flow info
             "src_ip"          : flow.get("src_ip",          "Unknown"),
             "dst_ip"          : flow.get("dst_ip",          "Unknown"),
             "protocol"        : flow.get("protocol",        "Unknown"),
@@ -252,101 +349,85 @@ class ArgusClassifier:
             "total_bytes"     : flow.get("total_bytes",     0),
             "packets_per_sec" : flow.get("packets_per_sec", 0),
             "flow_duration"   : flow.get("flow_duration",   0),
-
-            # Verdict
             "attack_type"     : attack_type,
+            "severity"        : severity,
             "is_threat"       : is_threat,
-            "rf_confidence"   : rf_result["confidence"],
-            "ae_error"        : ae_result["error"],
-            "ae_is_anomaly"   : ae_result["is_anomaly"],
+            "detection_source": source,
+            "nsl_rf_label"    : nsl_rf["label"],
+            "nsl_rf_conf"     : nsl_rf["confidence"],
+            "cic_rf_label"    : cic_rf["label"],
+            "cic_rf_conf"     : cic_rf["confidence"],
+            "nsl_ae_anomaly"  : nsl_ae["is_anomaly"],
+            "nsl_ae_error"    : nsl_ae["error"],
+            "cic_ae_anomaly"  : cic_ae["is_anomaly"],
+            "cic_ae_error"    : cic_ae["error"],
         }
 
-        # Log result
+        # Log
         if is_threat:
             logger.warning(
-                f"🚨 THREAT DETECTED | {attack_type} | "
+                f"🚨 THREAT | {attack_type} | {severity} | "
                 f"{flow.get('src_ip')} → {flow.get('dst_ip')} | "
-                f"RF: {rf_result['confidence']}% | "
-                f"AE Error: {ae_result['error']:.4f}"
+                f"Source: {source}"
             )
         else:
             logger.info(
-                f"✅ Normal traffic  | "
+                f"✅ Normal | "
                 f"{flow.get('src_ip')} → {flow.get('dst_ip')} | "
-                f"RF: {rf_result['confidence']}%"
+                f"CIC-RF: {cic_rf['confidence']}%"
             )
 
         return result
 
 
 # ─────────────────────────────────────────
-# Run directly to test
+# Test
 # ─────────────────────────────────────────
 if __name__ == "__main__":
+    clf = ArgusClassifier()
 
-    classifier = ArgusClassifier()
-
-    # Load models
-    if not classifier.load_models():
+    if not clf.load_models():
         exit(1)
 
-    # Simulate test flows
     test_flows = [
         {
-            "src_ip"          : "192.168.1.100",
-            "dst_ip"          : "10.203.189.103",
-            "protocol"        : "TCP",
-            "packet_count"    : 850,
-            "total_bytes"     : 425000,
-            "packets_per_sec" : 48.5,
-            "flow_duration"   : 17.5,
-            "syn_count"       : 800,
-            "rst_count"       : 5,
+            "src_ip": "192.168.1.100", "dst_ip": "10.0.0.1",
+            "protocol": "TCP", "packet_count": 850,
+            "total_bytes": 425000, "packets_per_sec": 48.5,
+            "flow_duration": 17.5, "syn_count": 800,
+            "rst_count": 5, "dst_port": 80
         },
         {
-            "src_ip"          : "10.203.189.103",
-            "dst_ip"          : "142.251.220.14",
-            "protocol"        : "TCP",
-            "packet_count"    : 12,
-            "total_bytes"     : 5400,
-            "packets_per_sec" : 3.2,
-            "flow_duration"   : 3.7,
-            "syn_count"       : 1,
-            "rst_count"       : 0,
+            "src_ip": "10.0.0.1", "dst_ip": "8.8.8.8",
+            "protocol": "TCP", "packet_count": 12,
+            "total_bytes": 5400, "packets_per_sec": 3.2,
+            "flow_duration": 3.7, "syn_count": 1,
+            "rst_count": 0, "dst_port": 443
         },
         {
-            "src_ip"          : "203.0.113.45",
-            "dst_ip"          : "10.203.189.103",
-            "protocol"        : "TCP",
-            "packet_count"    : 120,
-            "total_bytes"     : 6000,
-            "packets_per_sec" : 22.3,
-            "flow_duration"   : 5.3,
-            "syn_count"       : 90,
-            "rst_count"       : 30,
+            "src_ip": "203.0.113.45", "dst_ip": "10.0.0.1",
+            "protocol": "TCP", "packet_count": 120,
+            "total_bytes": 6000, "packets_per_sec": 22.3,
+            "flow_duration": 5.3, "syn_count": 90,
+            "rst_count": 30, "dst_port": 22
         },
     ]
 
-    print("\n" + "═" * 60)
-    print("  ARGUS — Live Classification Test")
-    print("═" * 60)
+    print("\n" + "═" * 65)
+    print("  ARGUS — Dual Dataset Classification Test")
+    print("═" * 65)
 
-    threats_found = []
     for i, flow in enumerate(test_flows, 1):
         print(f"\n[Flow #{i}] {flow['src_ip']} → {flow['dst_ip']}")
-        print("─" * 40)
-        result = classifier.classify_flow(flow)
+        print("─" * 50)
+        result = clf.classify_flow(flow)
+        print(f"  Attack Type      : {result['attack_type']}")
+        print(f"  Severity         : {result['severity']}")
+        print(f"  Is Threat        : {'🚨 YES' if result['is_threat'] else '✅ NO'}")
+        print(f"  Detection Source : {result['detection_source']}")
+        print(f"  NSL-KDD RF       : {result['nsl_rf_label']} ({result['nsl_rf_conf']}%)")
+        print(f"  CICIDS2017 RF    : {result['cic_rf_label']} ({result['cic_rf_conf']}%)")
+        print(f"  NSL AE Anomaly   : {result['nsl_ae_anomaly']}")
+        print(f"  CIC AE Anomaly   : {result['cic_ae_anomaly']}")
 
-        print(f"  Attack Type   : {result['attack_type']}")
-        print(f"  Is Threat     : {'🚨 YES' if result['is_threat'] else '✅ NO'}")
-        print(f"  RF Confidence : {result['rf_confidence']}%")
-        print(f"  AE Error      : {result['ae_error']}")
-        print(f"  AE Anomaly    : {result['ae_is_anomaly']}")
-
-        if result["is_threat"]:
-            threats_found.append(result)
-
-    print(f"\n{'═' * 60}")
-    print(f"  Total flows   : {len(test_flows)}")
-    print(f"  Threats found : {len(threats_found)}")
-    print(f"{'═' * 60}\n")
+    print(f"\n{'═' * 65}\n")
