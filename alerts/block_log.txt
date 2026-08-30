@@ -1,0 +1,1 @@
+[2026-08-30 16:07:01] BLOCKED | IP: 203.0.113.45 | Attack: DDoS | Severity: HIGH

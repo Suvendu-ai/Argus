@@ -14,6 +14,7 @@ from core.extractor import FeatureExtractor
 from core.classifier import ArgusClassifier
 from llm.explainer import explain_threat
 from llm.reporter import generate_report
+from core.ip_blocker import process_threat as check_and_block
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,6 +140,8 @@ def process_flow(flow: dict):
 
         alert = {**result, "id": len(recent_alerts) + 1}
         recent_alerts.appendleft(alert)
+        # Auto block if threshold reached
+        result = check_and_block(result)
 
         broadcast_from_thread({
             "type"  : "alert",
@@ -248,6 +251,34 @@ async def generate_incident_report():
 async def explain_single(threat: dict):
     return JSONResponse(content=explain_threat(threat))
 
+@app.get("/blocked-ips")
+async def get_blocked():
+    """Returns all currently blocked IPs."""
+    from core.ip_blocker import get_blocked_ips, get_alert_counts
+    return JSONResponse(content={
+        "blocked_ips"  : get_blocked_ips(),
+        "alert_counts" : get_alert_counts(),
+        "total_blocked": len(get_blocked_ips())
+    })
+
+
+@app.post("/unblock/{ip}")
+async def unblock_ip(ip: str):
+    """Manually unblocks an IP."""
+    from core.ip_blocker import unblock_ip_windows
+    success = unblock_ip_windows(ip)
+    return JSONResponse(content={
+        "message": f"✅ {ip} unblocked" if success else f"❌ Failed to unblock {ip}",
+        "success": success
+    })
+
+
+@app.post("/clear-blocks")
+async def clear_blocks():
+    """Emergency — removes all ARGUS firewall rules."""
+    from core.ip_blocker import clear_all_blocks
+    clear_all_blocks()
+    return JSONResponse(content={"message": "✅ All blocks cleared"})
 
 # ─────────────────────────────────────────
 # WebSocket
