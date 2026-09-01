@@ -1,4 +1,5 @@
 # api/main.py — FIXED VERSION
+from core.geoip import enrich_threat
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -128,7 +129,8 @@ def process_flow(flow: dict):
         return
 
     result["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+    # Add Geo-IP location data
+    result = enrich_threat(result)
     if result["is_threat"]:
         stats["total_threats"] += 1
         attack = result["attack_type"]
